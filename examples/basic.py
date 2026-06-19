@@ -26,7 +26,7 @@ def main() -> None:
     settings=PrintSettings(sparse_infill_density="100%"),
   )
 
-  out = proj.save("basic.3mf")
+  out = proj.save("export/basic.3mf")
   print(f"wrote {out}")
 
 

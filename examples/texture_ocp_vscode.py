@@ -59,7 +59,7 @@ def main() -> None:
 
   show(proj.to_compound(), modes=[Render.FACES])
 
-  out = proj.save("texture.3mf")
+  out = proj.save("export/texture.3mf")
   print(f"wrote {out}")
 
 

@@ -15,7 +15,6 @@ CONTENT_TYPES_PATH = "[Content_Types].xml"
 RELS_PATH = "_rels/.rels"
 MODEL_PATH = "3D/3dmodel.model"
 MODEL_SETTINGS_PATH = "Metadata/model_settings.config"
-LAYER_HEIGHTS_PROFILE_PATH = "Metadata/layer_heights_profile.txt"
 
 CONTENT_TYPES_XML = """<?xml version="1.0" encoding="UTF-8"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
@@ -35,7 +34,6 @@ def write_3mf(
   path: str | PathLike[str],
   model_xml: str,
   model_settings_xml: str | None = None,
-  layer_heights_profile: str | None = None,
 ) -> Path:
   """Write a .3mf to ``path`` and return it."""
   path = Path(path)
@@ -45,6 +43,4 @@ def write_3mf(
     archive.writestr(MODEL_PATH, model_xml)
     if model_settings_xml is not None:
       archive.writestr(MODEL_SETTINGS_PATH, model_settings_xml)
-    if layer_heights_profile is not None:
-      archive.writestr(LAYER_HEIGHTS_PROFILE_PATH, layer_heights_profile)
   return path

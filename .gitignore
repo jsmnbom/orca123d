@@ -9,6 +9,12 @@ wheels/
 # Virtual environments
 .venv
 
+# Output files
+export/
+
+# shortcut
+orca-slicer.appimage
+
 # subprojects
 OrcaSlicer/
 build123d/

@@ -53,7 +53,7 @@ def main() -> None:
     tool, mode=EnforcerBlockerType.ENFORCER
   )
 
-  out = proj.save("seam_paint.3mf")
+  out = proj.save("export/seam_paint.3mf")
   print(f"wrote {out}")
 
 

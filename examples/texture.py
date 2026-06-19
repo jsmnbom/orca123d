@@ -70,7 +70,7 @@ def main() -> None:
     knurl(), faces=panel_shape.faces().sort_by(Axis.X)[-1], amplitude=0.4, scale=5.0
   )
 
-  out = proj.save("texture.3mf")
+  out = proj.save("export/texture.3mf")
   print(f"wrote {out}")
 
 

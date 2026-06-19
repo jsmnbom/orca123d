@@ -30,13 +30,14 @@ proj.save("basic.3mf")  # open in OrcaSlicer
 
 ## Features
 
-- **Objects and parts** — a `Project` holds objects; each object is one or more parts ("volumes" in OrcaSlicer). Parts carry an extruder assignment and a `subtype` (`NORMAL`, `MODIFIER`, `SUPPORT_ENFORCER`, `SUPPORT_BLOCKER`).
+- **Objects and parts** — a `Project` holds objects; each object is one or more parts ("volumes" in OrcaSlicer). Parts carry an extruder assignment and a `subtype` (`NORMAL`, `NEGATIVE` to carve material away, `MODIFIER` to apply settings to an overlapping region, `SUPPORT_ENFORCER`, `SUPPORT_BLOCKER`). `add_object(shape, subtype=…)` sets it for a single-part object; `add_part(shape, subtype=…)` for each volume.
 - **Typed print settings** — `PrintSettings` is a pydantic model generated from OrcaSlicer's own definitions, covering the slicer's *Print* tab. Every field is optional, so an instance is a sparse set of overrides; values are validated/coerced to OrcaSlicer's string form, and unknown keys pass through. Attach settings per object or per part.
+- **Print layout vs. assembly view** — objects keep their build123d coordinates as the *assembled* arrangement (OrcaSlicer's Assembly View); an optional per-object `print_location` lays them out differently *for printing*. OrcaSlicer auto-centers the whole group on a single plate, so this sets the **relative** print layout, not absolute bed coordinates (model-only files import onto one plate — they can't split objects across plates).
 - **Seam painting** — `part.paint_seam(region, ...)` biases (or blocks) the seam using build123d geometry as the selector: a whole **face**, a 2D **sketch** on a face, an **edge/wire** (paint within N mm), or a **solid** (paint where the surface lies inside it).
 - **Fuzzy-skin painting** — `part.paint_fuzzy_skin(region, ...)` enables/disables fuzzy skin over the same kinds of regions.
 - **Variable layer height** — `object.optimize_layer_height(faces, ...)` prints the z-span of chosen faces at a finer layer height (ramping in and out smoothly), the same result as OrcaSlicer's "Adaptive" button but driven by exactly the faces you hand it. `set_layer_height_profile(...)` is the low-level escape hatch.
 - **Surface texturing** — `part.apply_texture(heightmap, ...)` bakes a grayscale heightmap into the part as **real** surface relief: the mesh is adaptively subdivided and its vertices displaced along their normals (white pushes out, black pushes in). Triplanar projection by default; restrict to selected faces, or call it more than once for different textures.
-- **Preview** — `project.to_compound()` builds a build123d `Compound` mirroring the project tree (objects → parts), with textured parts shown as their displaced meshes (exactly what `save()` exports). Hand it to `ocp_vscode.show()` to preview in the [OCP CAD Viewer](https://github.com/bernhard-42/vscode-ocp-cad-viewer) VS Code extension, or to build123d's exporters.
+- **Preview** — `project.to_compound()` builds a build123d `Compound` mirroring the project tree (objects → parts), with textured parts shown as their displaced meshes (exactly what `save()` exports). Pass `layout="print"` to preview the bed layout (print locations applied, group bed-centered) instead of the default `"assembly"` view. Hand it to `ocp_vscode.show()` to preview in the [OCP CAD Viewer](https://github.com/bernhard-42/vscode-ocp-cad-viewer) VS Code extension, or to build123d's exporters.
 
 ## Install
 
@@ -57,9 +58,30 @@ from orca123d import PartSubtype, PrintSettings
 
 obj = proj.add_object(name="Bracket")
 obj.add_part(body, name="Body")
-obj.add_part(rib,  name="Rib", settings=PrintSettings(sparse_infill_density="100%"))
-obj.add_part(cut,  name="Pocket", subtype=PartSubtype.MODIFIER)
+obj.add_part(rib,  name="Rib")
+obj.add_part(core, name="Dense core", subtype=PartSubtype.MODIFIER,
+             settings=PrintSettings(sparse_infill_density="100%"))  # 100% infill where it overlaps
+obj.add_part(cut,  name="Pocket", subtype=PartSubtype.NEGATIVE)     # carves material away
 ```
+
+### Print layout vs. assembly view
+
+```python
+from build123d import Box, Pos
+
+# Base prints where it's designed; the lid is moved aside for printing, but the
+# Assembly View still shows it seated on the base.
+proj.add_object(Box(40, 40, 10), name="Base")
+proj.add_object(Pos(0, 0, 6.5) * Box(40, 40, 3), name="Lid",
+                print_location=Pos(50, 0, 0))
+
+proj.to_compound(layout="assembly")  # preview the assembled product
+proj.to_compound(layout="print")     # preview the print bed (spread, centered)
+```
+
+> Model-only files always import onto a single, auto-centered plate, so
+> `print_location` controls the *relative* bed layout (not absolute coordinates),
+> and objects can't be split across multiple plates from a model-only file.
 
 ### Seam / fuzzy-skin painting
 
@@ -101,6 +123,7 @@ Runnable scripts live in [`examples/`](examples/); each writes a `.3mf` to open 
 | Example | Shows |
 | --- | --- |
 | `examples/basic.py` | objects, multi-part volumes, per-object/part settings |
+| `examples/print_layout.py` | assembled layout vs. print-bed layout (`print_location`) |
 | `examples/seam_paint.py` | every seam-paint region type (face / sketch / edge / solid) |
 | `examples/fuzzy_skin_paint.py` | fuzzy-skin painting region types |
 | `examples/variable_layer_height.py` | adaptive layer height from selected faces |

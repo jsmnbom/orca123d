@@ -6,7 +6,9 @@ from dataclasses import dataclass
 from enum import Enum
 from os import PathLike
 from pathlib import Path
+from typing import Literal
 
+from build123d import Location
 from build123d.topology import Compound, Shape
 
 from .mesh import MeshData, mesh_to_face, tessellate_shape
@@ -52,9 +54,17 @@ class _TextureRequest:
 
 
 class PartSubtype(str, Enum):
-  """Per-part subtypes understood by OrcaSlicer."""
+  """Per-part subtypes understood by OrcaSlicer (its ``ModelVolumeType``).
+
+  ``NORMAL`` adds solid material; ``NEGATIVE`` carves it back out of the other
+  parts in the same object; ``MODIFIER`` leaves the geometry alone but applies
+  its own settings to whatever overlaps it; the two ``SUPPORT_*`` subtypes force
+  support to be generated (``ENFORCER``) or suppressed (``BLOCKER``) in their
+  volume. All but ``NORMAL`` only make sense alongside a normal part to act on.
+  """
 
   NORMAL = "normal_part"
+  NEGATIVE = "negative_part"
   MODIFIER = "modifier_part"
   SUPPORT_ENFORCER = "support_enforcer"
   SUPPORT_BLOCKER = "support_blocker"
@@ -292,12 +302,21 @@ class ResolvedPart(Part):
 class ModelObject:
   """A printed object on the plate, made of one or more parts."""
 
-  def __init__(self, *, name: str, settings: PrintSettings | None = None) -> None:
+  def __init__(
+    self,
+    *,
+    name: str,
+    settings: PrintSettings | None = None,
+    print_location: Location | None = None,
+  ) -> None:
     self.name = name
     self.settings = settings or PrintSettings()
     self.parts: list[Part] = []
-    # (z, layer_height) control points; z=0 is the object's bottom. None = uniform.
-    self.layer_height_profile: list[tuple[float, float]] | None = None
+    # Where this object is placed *for printing*, relative to its build123d
+    # design coordinates. ``None`` prints at the design position (which is also
+    # the assembled position). Set it to lay the object out for printing while
+    # the Assembly View keeps the design arrangement -- see ``Project.save``.
+    self.print_location = print_location
 
   def add_part(
     self,
@@ -322,70 +341,6 @@ class ModelObject:
     )
     self.parts.append(part)
     return part
-
-  def set_layer_height_profile(self, points: Sequence[tuple[float, float]]) -> None:
-    """Set a variable layer height directly from ``(z, height)`` control points.
-
-    The profile is a piecewise-linear curve OrcaSlicer samples while slicing:
-    ``z`` is measured from the object's bottom (objects are dropped to the bed)
-    and must start at 0; equal ``z`` values make a step, differing ones a ramp.
-    Heights are millimeters and must be positive (OrcaSlicer further clamps them
-    to the active printer's min/max layer height). This is the low-level escape
-    hatch; see :meth:`optimize_layer_height` to derive one from geometry.
-    """
-    pts = [(float(z), float(h)) for z, h in points]
-    if len(pts) < 2:
-      raise ValueError("layer height profile needs at least 2 (z, height) points")
-    if abs(pts[0][0]) > 1e-6:
-      raise ValueError("first control point must be at z=0 (the object's bottom)")
-    for (z0, _), (z1, _) in zip(pts, pts[1:]):
-      if z1 < z0 - 1e-9:
-        raise ValueError("control-point z values must be non-decreasing")
-    if any(h <= 0.0 for _, h in pts):
-      raise ValueError("layer heights must be positive")
-    self.layer_height_profile = pts
-
-  def optimize_layer_height(
-    self,
-    faces: Shape | Sequence[Shape],
-    *,
-    min_layer_height: float = 0.08,
-    base_height: float = 0.2,
-    max_change: float = 0.04,
-  ) -> None:
-    """Print the z-span of ``faces`` at a finer layer height than the rest.
-
-    Pass the build123d face(s) you care about (a ``Face``, a ``ShapeList`` from
-    ``shape.faces()``, or any shape -- its faces are used). The z-range those faces
-    occupy is taken to ``min_layer_height``; the height ramps from ``base_height``
-    into that band and back out above it, changing at most ``max_change`` mm per
-    layer so there is no abrupt step. Everything else prints at ``base_height``.
-
-    ``base_height`` is the object's normal layer height and ``min_layer_height``
-    the fine height for the band; both should suit the target printer/nozzle.
-    """
-    from .layer_heights import optimize_for_faces
-
-    if not self.parts:
-      raise ValueError(f"Object {self.name!r} has no parts to measure against")
-    items = [faces] if isinstance(faces, Shape) else faces
-    selected = [f for item in items for f in item.faces()]
-    if not selected:
-      raise ValueError("optimize_layer_height needs at least one face")
-    face_meshes = [tessellate_shape(f) for f in selected]
-
-    boxes = [part.shape.bounding_box(optimal=True) for part in self.parts]
-    z_origin = min(bb.min.Z for bb in boxes)
-    object_height = max(bb.max.Z for bb in boxes) - z_origin
-
-    self.layer_height_profile = optimize_for_faces(
-      face_meshes,
-      z_origin=z_origin,
-      object_height=object_height,
-      min_layer_height=min_layer_height,
-      base_height=base_height,
-      max_change=max_change,
-    )
 
   def __repr__(self) -> str:
     return f"ModelObject(name={self.name!r}, parts={len(self.parts)})"
@@ -413,8 +368,7 @@ class ResolvedObject(ModelObject):
     super().__init__(name=obj.name, settings=obj.settings)
     self.parts: list[ResolvedPart] = parts  # type: ignore[assignment]
     self.object_id = object_id
-    self.translate: tuple[float, float, float] = (0.0, 0.0, 0.0)
-    self.layer_height_profile = obj.layer_height_profile
+    self.print_location = obj.print_location
 
 
 class Project:
@@ -428,18 +382,36 @@ class Project:
     shape: "Shape | None" = None,
     *,
     name: str | None = None,
+    extruder: int | None = None,
     settings: PrintSettings | None = None,
+    subtype: PartSubtype = PartSubtype.NORMAL,
+    print_location: Location | None = None,
   ) -> ModelObject:
     """Add an object. If ``shape`` is given it becomes the object's single part.
 
     When ``name`` is omitted, a given shape's ``label`` is used if it has one,
     otherwise a name is generated from the object index.
+
+    ``extruder`` and ``subtype`` apply to that single part -- ``subtype`` is a
+    :class:`PartSubtype` such as ``NEGATIVE`` or ``MODIFIER`` -- and are ignored
+    when no ``shape`` is given (use :meth:`~ModelObject.add_part` per part
+    instead). ``settings`` attaches to the *object* (so it cascades to every
+    part), matching the multi-part workflow.
+
+    ``print_location`` is a build123d ``Location``/``Pos``/``Rot`` placing the
+    object *for printing*, applied on top of its design coordinates; the
+    Assembly View still shows the object at its design position. ``None`` (the
+    default) prints at the design position. See :meth:`save`.
     """
     if name is None and shape is not None and shape.label:
       name = shape.label
-    obj = ModelObject(name=name or f"Object {len(self.objects) + 1}", settings=settings)
+    obj = ModelObject(
+      name=name or f"Object {len(self.objects) + 1}",
+      settings=settings,
+      print_location=print_location,
+    )
     if shape is not None:
-      obj.add_part(shape, name=obj.name)
+      obj.add_part(shape, name=obj.name, extruder=extruder, subtype=subtype)
     self.objects.append(obj)
     return obj
 
@@ -467,8 +439,17 @@ class Project:
     tolerance: float = 0.01,
     angular_tolerance: float = 0.1,
   ) -> Path:
-    """Tessellate and write a model-only .3mf to ``path``."""
-    from .layer_heights import build_layer_heights_profile
+    """Tessellate and write a model-only .3mf to ``path``.
+
+    Objects keep their build123d design coordinates as the assembled layout. An
+    object with a :attr:`~ModelObject.print_location` is additionally placed
+    there for printing (the build ``<item>`` transform); when any object is
+    placed, an ``<assemble>`` block pins *every* object's Assembly-View position
+    back to its design coordinates so the two views can differ. OrcaSlicer still
+    auto-centers the whole group on a single plate on import, so
+    ``print_location`` controls the *relative* print layout rather than absolute
+    bed coordinates.
+    """
     from .model_settings import build_model_settings_xml
     from .model_xml import build_model_xml
     from .package import write_3mf
@@ -478,8 +459,7 @@ class Project:
     resolved = self._resolve(tolerance, angular_tolerance)
     model_xml_str = build_model_xml(resolved)
     settings_xml = build_model_settings_xml(resolved)
-    layer_heights = build_layer_heights_profile(resolved)
-    return write_3mf(path, model_xml_str, settings_xml, layer_heights)
+    return write_3mf(path, model_xml_str, settings_xml)
 
   def to_compound(
     self,
@@ -487,6 +467,7 @@ class Project:
     tolerance: float = 0.01,
     angular_tolerance: float = 0.1,
     textured: bool = True,
+    layout: Literal["assembly", "print"] = "assembly",
   ) -> Compound:
     """Build a build123d assembly mirroring the Project tree.
 
@@ -494,6 +475,15 @@ class Project:
     objects -> parts) that you can hand to ``ocp_vscode.show()`` to preview the
     project, or to build123d's exporters. Each part keeps its name as the node
     ``label``.
+
+    ``layout`` selects which OrcaSlicer view the compound mirrors:
+
+    * ``"assembly"`` (default) -- parts at their build123d design coordinates,
+      i.e. the assembled arrangement shown in OrcaSlicer's Assembly View.
+    * ``"print"`` -- each object's :attr:`~ModelObject.print_location` applied,
+      then the whole group centered in XY, i.e. what lands on the print bed
+      (OrcaSlicer auto-centers the group on the plate). Objects without a
+      ``print_location`` stay at their design position.
 
     Textured parts are resolved to their displaced meshes -- i.e. exactly what
     :meth:`save` exports -- so the relief is visible; every other part is shown
@@ -505,6 +495,7 @@ class Project:
       raise ValueError("Project has no objects")
     obj_nodes: list[Compound] = []
     for obj in self.objects:
+      place = obj.print_location if layout == "print" else None
       part_shapes: list[Shape] = []
       for part in obj.parts:
         if textured and part._textures:
@@ -512,10 +503,16 @@ class Project:
           shp = mesh_to_face(mesh)
         else:
           shp = copy.copy(part.shape)
+        if place is not None:
+          shp = place * shp
         shp.label = part.name
         part_shapes.append(shp)
       obj_nodes.append(Compound(label=obj.name, children=part_shapes))
-    return Compound(label="Project", children=obj_nodes)
+    project = Compound(label="Project", children=obj_nodes)
+    if layout == "print":
+      center = project.bounding_box().center()
+      project.move(Location((-center.X, -center.Y, 0.0)))
+    return project
 
   def __repr__(self) -> str:
     return f"Project(objects={len(self.objects)})"

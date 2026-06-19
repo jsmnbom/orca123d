@@ -15,6 +15,8 @@ every triangle (``_handle_start_triangle`` in ``bbs_3mf.cpp``), so the generic
 ``From_Other`` file honors them too -- no need for an OrcaSlicer-tagged file.
 """
 
+from build123d import Location
+
 from .project import ResolvedObject
 
 CORE_NS = "http://schemas.microsoft.com/3dmanufacturing/core/2015/02"
@@ -24,7 +26,9 @@ BAMBU_NS = "http://schemas.bambulab.com/package/2021"
 APPLICATION = "orca123d-0.1.0"
 BBS_3MF_VERSION = "1"
 
-# 3MF transform attr: 3x3 rotation (row-major) followed by translation.
+# 3MF transform attr: the 3x3 linear part by columns, then the translation
+# (column-major 3x4), the layout OrcaSlicer's
+# bbs_get_transform_from_3mf_specs_string parses.
 IDENTITY_TRANSFORM = "1 0 0 0 1 0 0 0 1 0 0 0"
 
 
@@ -32,9 +36,17 @@ def _f(value: float) -> str:
   return f"{value:.6f}"
 
 
-def _transform(translate: tuple[float, float, float]) -> str:
-  tx, ty, tz = translate
-  return f"1 0 0 0 1 0 0 0 1 {_f(tx)} {_f(ty)} {_f(tz)}"
+def _transform(location: Location | None) -> str:
+  """Serialize a build123d Location as a 3MF transform string (see above).
+
+  ``None`` yields the identity transform, so objects without a print location
+  emit exactly the bytes earlier versions did.
+  """
+  if location is None:
+    return IDENTITY_TRANSFORM
+  # OCP gp_Trsf, a 3x4 matrix; Value(row, col) is 1-indexed, col 4 = translation.
+  trsf = location.wrapped.Transformation()
+  return " ".join(_f(trsf.Value(r, c)) for c in range(1, 5) for r in range(1, 4))
 
 
 def build_model_xml(resolved_objects: list[ResolvedObject]) -> str:
@@ -85,7 +97,7 @@ def build_model_xml(resolved_objects: list[ResolvedObject]) -> str:
   out.append(" </resources>")
   out.append(" <build>")
   out.extend(
-    f'  <item objectid="{obj.object_id}" transform="{_transform(obj.translate)}" '
+    f'  <item objectid="{obj.object_id}" transform="{_transform(obj.print_location)}" '
     f'printable="1" auto_drop="1"/>'
     for obj in resolved_objects
   )

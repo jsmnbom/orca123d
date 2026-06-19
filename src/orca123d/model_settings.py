@@ -12,6 +12,9 @@ us, rather than hand-rolled strings.
 
 import xml.etree.ElementTree as ET
 
+import numpy as np
+
+from .model_xml import _f
 from .project import ResolvedObject
 
 _XML_DECLARATION = '<?xml version="1.0" encoding="UTF-8"?>\n'
@@ -19,6 +22,22 @@ _XML_DECLARATION = '<?xml version="1.0" encoding="UTF-8"?>\n'
 
 def _metadata(parent: ET.Element, key: str, value: str) -> None:
   ET.SubElement(parent, "metadata", {"key": key, "value": value})
+
+
+def _assemble_transform(obj: ResolvedObject) -> str:
+  """Assemble-View transform restoring the object to its design position.
+
+  OrcaSlicer re-centers every imported object's mesh on its own bounding-box
+  center (recording the discarded offset as ``source_offset_*``) and applies the
+  assemble transform to that *re-centered* geometry. So the translation must be
+  the object's design bounding-box center to put it back where it was designed;
+  an identity transform would instead leave every object whose center is off the
+  origin at the world origin (then dropped to the bed). The linear part stays
+  identity -- any design rotation is already baked into the mesh vertices.
+  """
+  verts = np.concatenate([part.mesh.vertices for part in obj.parts])
+  cx, cy, cz = (verts.min(axis=0) + verts.max(axis=0)) / 2.0
+  return f"1 0 0 0 1 0 0 0 1 {_f(cx)} {_f(cy)} {_f(cz)}"
 
 
 def build_model_settings_xml(resolved_objects: list[ResolvedObject]) -> str:
@@ -38,6 +57,32 @@ def build_model_settings_xml(resolved_objects: list[ResolvedObject]) -> str:
         _metadata(part_el, "extruder", str(part.extruder))
       for key, value in part.settings.items():
         _metadata(part_el, key, value)
+
+  # Assembly View: pin every object back to its design (mesh) coordinates so the
+  # Assembly View shows the assembled layout while the print bed uses the
+  # per-object print_location. The assemble transform's translation is the
+  # object's design bounding-box center -- NOT identity -- because OrcaSlicer
+  # re-centers each imported mesh on that center (see _assemble_transform), so
+  # identity would collapse every off-origin object onto the world origin.
+  # This block is only needed once any object is placed for print: OrcaSlicer
+  # otherwise copies each instance's *print* transform into its assemble
+  # transform, and that transform has been group-centered and dropped to the bed
+  # -- so a placed object would not line up with an unplaced one. With no placed
+  # objects every instance is shifted by the same vector, so the copied
+  # transforms stay aligned and no <assemble> block is required.
+  if any(obj.print_location is not None for obj in resolved_objects):
+    assemble_el = ET.SubElement(config, "assemble")
+    for obj in resolved_objects:
+      ET.SubElement(
+        assemble_el,
+        "assemble_item",
+        {
+          "object_id": str(obj.object_id),
+          "instance_id": "0",
+          "transform": _assemble_transform(obj),
+          "offset": "0 0 0",
+        },
+      )
 
   ET.indent(config, space="  ")
   return _XML_DECLARATION + ET.tostring(config, encoding="unicode") + "\n"
