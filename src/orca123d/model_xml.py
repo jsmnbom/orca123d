@@ -15,9 +15,12 @@ every triangle (``_handle_start_triangle`` in ``bbs_3mf.cpp``), so the generic
 ``From_Other`` file honors them too -- no need for an OrcaSlicer-tagged file.
 """
 
+from xml.sax.saxutils import escape
+
 from build123d import Location
 
 from .project import ResolvedObject
+from .project_info import ProjectInfo
 
 CORE_NS = "http://schemas.microsoft.com/3dmanufacturing/core/2015/02"
 BAMBU_NS = "http://schemas.bambulab.com/package/2021"
@@ -49,7 +52,9 @@ def _transform(location: Location | None) -> str:
   return " ".join(_f(trsf.Value(r, c)) for c in range(1, 5) for r in range(1, 4))
 
 
-def build_model_xml(resolved_objects: list[ResolvedObject]) -> str:
+def build_model_xml(
+  resolved_objects: list[ResolvedObject], info: ProjectInfo | None = None
+) -> str:
   """Render the 3dmodel.model XML for the resolved objects."""
   out: list[str] = []
   out.append('<?xml version="1.0" encoding="UTF-8"?>')
@@ -59,6 +64,10 @@ def build_model_xml(resolved_objects: list[ResolvedObject]) -> str:
   )
   out.append(f' <metadata name="Application">{APPLICATION}</metadata>')
   out.append(f' <metadata name="BambuStudio:3mfVersion">{BBS_3MF_VERSION}</metadata>')
+  if info is not None:
+    for name, value in info.metadata_items():
+      name = escape(name, {'"': "&quot;"})
+      out.append(f' <metadata name="{name}">{escape(value)}</metadata>')
   out.append(" <resources>")
 
   for obj in resolved_objects:

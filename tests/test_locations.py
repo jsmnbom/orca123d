@@ -115,8 +115,8 @@ def test_to_compound_print_layout_centers_and_spreads():
   proj.add_object(Box(10, 10, 10), name="A")  # at design origin
   proj.add_object(Box(10, 10, 10), name="B", print_location=Pos(100, 0, 0))
 
-  asm = proj.to_compound(layout="assembly", textured=False)
-  prt = proj.to_compound(layout="print", textured=False)
+  asm = proj.to_compound(layout="assembly")
+  prt = proj.to_compound(layout="print")
 
   # Assembly keeps design coords (both boxes overlap at the origin).
   assert asm.bounding_box().size.X == 10

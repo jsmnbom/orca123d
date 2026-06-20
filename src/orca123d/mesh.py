@@ -3,15 +3,10 @@
 from dataclasses import dataclass
 
 import numpy as np
-from build123d import Face
 from build123d.topology import Shape
-from OCP.BRep import BRep_Builder, BRep_Tool
-from OCP.gp import gp_Pnt
-from OCP.Poly import Poly_Array1OfTriangle, Poly_Triangle, Poly_Triangulation
-from OCP.TColgp import TColgp_Array1OfPnt
+from OCP.BRep import BRep_Tool
 from OCP.TopAbs import TopAbs_Orientation
 from OCP.TopLoc import TopLoc_Location
-from OCP.TopoDS import TopoDS_Face
 
 # Quantization used to weld coincident vertices. Nodes shared along an edge of a
 # whole-shape triangulation are computed once, so equal positions land in the
@@ -29,7 +24,7 @@ class MeshData:
     triangles: ``(M, 3)`` int64 array of zero-based vertex indices.
     face_ranges: one ``(start, end)`` half-open triangle-index range per
       source face, in ``shape.faces()`` order. Enables per-face painting
-      (seam / support / fuzzy skin) and texturing without re-tessellating.
+      (seam / support / fuzzy skin) without re-tessellating.
   """
 
   vertices: np.ndarray
@@ -107,60 +102,3 @@ def tessellate_shape(
     np.asarray(triangles, dtype=np.int64),
     face_ranges,
   )
-
-
-def simplify_mesh(
-  mesh: MeshData, reduction: float, *, preserve_border: bool = True
-) -> MeshData:
-  """Decimate ``mesh`` with quadric error metrics, dropping ~``reduction`` of its
-  triangles (``0`` disables, ``0.9`` removes ~90%); returns a fresh single-range
-  :class:`MeshData`.
-
-  This is the QEM pass the original stlTexturizer runs after displacement.
-  Collapsing coplanar geometry costs zero quadric error, so flat regions (the bed
-  plane, untextured faces, uniform-relief areas) shrink hardest while sharp edges
-  and texture relief are preserved; the per-vertex deviation stays well below a
-  printable feature size. Aggressive QEM cannot guarantee a closed manifold, so
-  the result may carry a few non-manifold edges -- OrcaSlicer repairs those on
-  import, and the geometry is otherwise unchanged.
-  """
-  if reduction <= 0.0:
-    return mesh
-  import pyfqmr
-
-  faces = np.asarray(mesh.triangles, dtype=np.int64)
-  target = max(4, round(len(faces) * (1.0 - reduction)))
-  if target >= len(faces):
-    return mesh
-  simp = pyfqmr.Simplify()
-  simp.setMesh(np.asarray(mesh.vertices, dtype=np.float64), faces)
-  simp.simplify_mesh(target_count=target, preserve_border=preserve_border, verbose=0)
-  verts, tris, _ = simp.getMesh()
-  return MeshData(
-    vertices=np.asarray(verts, dtype=np.float64),
-    triangles=np.asarray(tris, dtype=np.int64),
-    face_ranges=[(0, len(tris))],
-  )
-
-
-def mesh_to_face(mesh: MeshData) -> Face:
-  """Wrap a :class:`MeshData` as a build123d ``Face`` backed by its triangles.
-
-  The face carries only a ``Poly_Triangulation`` (no underlying surface), exactly
-  like an imported STL. That is enough to *display* a baked mesh -- e.g. the
-  textured/displaced result in ocp_vscode -- without remeshing it (there is no
-  surface to remesh, so the viewer uses these triangles as-is).
-  """
-  nodes = TColgp_Array1OfPnt(1, len(mesh.vertices))
-  for i, (x, y, z) in enumerate(mesh.vertices, 1):
-    nodes.SetValue(i, gp_Pnt(float(x), float(y), float(z)))
-  triangles = Poly_Array1OfTriangle(1, len(mesh.triangles))
-  for i, (a, b, c) in enumerate(mesh.triangles, 1):
-    # OCP nodes are 1-based; Poly_Triangle wants Python ints, not numpy scalars.
-    triangles.SetValue(i, Poly_Triangle(int(a) + 1, int(b) + 1, int(c) + 1))
-
-  face = TopoDS_Face()
-  builder = BRep_Builder()
-  builder.MakeFace(face)
-  builder.UpdateFace(face, Poly_Triangulation(nodes, triangles))
-  return Face(face)

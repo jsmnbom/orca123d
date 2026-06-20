@@ -1,13 +1,12 @@
 # orca123d
 
-Turn [build123d](https://github.com/gumyr/build123d) models into [OrcaSlicer](https://github.com/SoftFever/OrcaSlicer) project (`.3mf`) files — geometry **plus** per-object and per-part slicer settings, painted regions, variable layer height, and baked-in surface textures — straight from Python.
-
-You design parametrically in build123d, then describe how each object should be printed in code. `orca123d` tessellates the shapes and writes a `.3mf` you open directly in OrcaSlicer, with your overrides already applied.
+Project to help when working with [build123d](https://github.com/gumyr/build123d) models in [OrcaSlicer](https://github.com/SoftFever/OrcaSlicer). Generate `.3mf` files with geometry **plus** per-object and per-part slicer settings and painted regions — directly from Python.
 
 ```python
 from build123d import Box, Cylinder, Pos
 from orca123d import Project, PrintSettings
 
+# Project is just a convenient wrapper around the 3MF structure: objects, parts, settings, and painted regions.
 proj = Project()
 
 # A single-solid object with a per-object override.
@@ -35,9 +34,8 @@ proj.save("basic.3mf")  # open in OrcaSlicer
 - **Print layout vs. assembly view** — objects keep their build123d coordinates as the *assembled* arrangement (OrcaSlicer's Assembly View); an optional per-object `print_location` lays them out differently *for printing*. OrcaSlicer auto-centers the whole group on a single plate, so this sets the **relative** print layout, not absolute bed coordinates (model-only files import onto one plate — they can't split objects across plates).
 - **Seam painting** — `part.paint_seam(region, ...)` biases (or blocks) the seam using build123d geometry as the selector: a whole **face**, a 2D **sketch** on a face, an **edge/wire** (paint within N mm), or a **solid** (paint where the surface lies inside it).
 - **Fuzzy-skin painting** — `part.paint_fuzzy_skin(region, ...)` enables/disables fuzzy skin over the same kinds of regions.
-- **Variable layer height** — `object.optimize_layer_height(faces, ...)` prints the z-span of chosen faces at a finer layer height (ramping in and out smoothly), the same result as OrcaSlicer's "Adaptive" button but driven by exactly the faces you hand it. `set_layer_height_profile(...)` is the low-level escape hatch.
-- **Surface texturing** — `part.apply_texture(heightmap, ...)` bakes a grayscale heightmap into the part as **real** surface relief: the mesh is adaptively subdivided and its vertices displaced along their normals (white pushes out, black pushes in). Triplanar projection by default; restrict to selected faces, or call it more than once for different textures.
-- **Preview** — `project.to_compound()` builds a build123d `Compound` mirroring the project tree (objects → parts), with textured parts shown as their displaced meshes (exactly what `save()` exports). Pass `layout="print"` to preview the bed layout (print locations applied, group bed-centered) instead of the default `"assembly"` view. Hand it to `ocp_vscode.show()` to preview in the [OCP CAD Viewer](https://github.com/bernhard-42/vscode-ocp-cad-viewer) VS Code extension, or to build123d's exporters.
+- **Project info** — `Project(info=ProjectInfo(...))` attaches design metadata (`title`, `designer`, `description`, `copyright`, `license`) written as `<model>` metadata, which OrcaSlicer surfaces in its Project / Auxiliaries panels. `license` takes a `License` member (the CC options) or a raw string; any other 3MF metadata key can be passed as an extra keyword and is written verbatim.
+- **Preview** — `project.to_compound()` builds a build123d `Compound` mirroring the project tree (objects → parts). Pass `layout="print"` to preview the bed layout (print locations applied, group bed-centered) instead of the default `"assembly"` view. Hand it to `ocp_vscode.show()` to preview in the [OCP CAD Viewer](https://github.com/bernhard-42/vscode-ocp-cad-viewer) VS Code extension, or to build123d's exporters.
 
 ## Install
 
@@ -62,6 +60,20 @@ obj.add_part(rib,  name="Rib")
 obj.add_part(core, name="Dense core", subtype=PartSubtype.MODIFIER,
              settings=PrintSettings(sparse_infill_density="100%"))  # 100% infill where it overlaps
 obj.add_part(cut,  name="Pocket", subtype=PartSubtype.NEGATIVE)     # carves material away
+```
+
+### Project info
+
+```python
+from orca123d import License, Project, ProjectInfo
+
+proj = Project(info=ProjectInfo(
+    title="Two Color Tag",
+    designer="Jas",
+    description="A two-part name tag.",
+    license=License.CC_BY_SA,        # or a raw string
+    Origin="MakerWorld",             # any other 3MF metadata key, written verbatim
+))
 ```
 
 ### Print layout vs. assembly view
@@ -97,25 +109,6 @@ corner = box.edges().filter_by(Axis.Z).sort_by(Axis.X)[-1]
 part.paint_seam(corner, mode=EnforcerBlockerType.ENFORCER, within=1.5)
 ```
 
-### Variable layer height
-
-```python
-from build123d import GeomType
-
-obj = proj.add_object(block, name="Filleted block")
-curved = block.faces().filter_by(GeomType.PLANE, reverse=True)
-obj.optimize_layer_height(curved, base_height=0.2, min_layer_height=0.08)
-```
-
-### Surface texture
-
-```python
-obj = proj.add_object(Box(20, 20, 20), name="Knurled cube")
-obj.parts[0].apply_texture(heightmap, amplitude=0.5, scale=6.0)
-```
-
-> Texturing and painting can't be combined on the *same* part — subdivision invalidates painted triangles — so split the geometry into separate parts if you need both.
-
 ## Examples
 
 Runnable scripts live in [`examples/`](examples/); each writes a `.3mf` to open in OrcaSlicer:
@@ -126,8 +119,6 @@ Runnable scripts live in [`examples/`](examples/); each writes a `.3mf` to open 
 | `examples/print_layout.py` | assembled layout vs. print-bed layout (`print_location`) |
 | `examples/seam_paint.py` | every seam-paint region type (face / sketch / edge / solid) |
 | `examples/fuzzy_skin_paint.py` | fuzzy-skin painting region types |
-| `examples/variable_layer_height.py` | adaptive layer height from selected faces |
-| `examples/texture.py` | baked-in surface textures, including per-face |
 
 ```bash
 uv run python examples/basic.py

@@ -10,14 +10,15 @@ from . import print_settings as _print_settings
 from .paint import EnforcerBlockerType
 from .print_settings import *  # noqa: F403  -- PrintSettings + the print-setting enums
 from .project import ModelObject, Part, PartSubtype, Project
-from .texture import ProjectionMode
+from .project_info import License, ProjectInfo
 
 __all__ = [
   "EnforcerBlockerType",
+  "License",
   "ModelObject",
   "Part",
   "PartSubtype",
-  "ProjectionMode",
   "Project",
+  "ProjectInfo",
 ]
 __all__ += _print_settings.__all__
