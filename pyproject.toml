@@ -1,6 +1,6 @@
 [project]
 name = "orca123d"
-version = "0.1.0"
+version = "0.1.1"
 description = "Turn build123d models into OrcaSlicer project (.3mf) files with per-object settings"
 readme = "README.md"
 requires-python = ">=3.13"
@@ -21,6 +21,11 @@ dependencies = [
     "numpy>=2.4.6",
     "pydantic>=2",
 ]
+
+[project.urls]
+Homepage = "https://github.com/jsmnbom/orca123d"
+Repository = "https://github.com/jsmnbom/orca123d"
+Issues = "https://github.com/jsmnbom/orca123d/issues"
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.15.16", "cadquery-ocp-stubs>=7.9.3.1.1"]

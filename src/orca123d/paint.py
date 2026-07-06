@@ -38,7 +38,9 @@ from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeVertex
 from OCP.BRepClass import BRepClass_FaceClassifier
 from OCP.BRepClass3d import BRepClass3d_SolidClassifier
 from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+from OCP.BRepGProp import BRepGProp
 from OCP.Geom import Geom_Surface
+from OCP.GProp import GProp_GProps
 from OCP.gp import gp_Pnt
 from OCP.ShapeAnalysis import ShapeAnalysis_Surface
 from OCP.TopAbs import TopAbs_IN, TopAbs_ON
@@ -297,9 +299,44 @@ def _paint_triangles(
       out[i] = encode_tree(tree)
 
 
-def _on_part(face: Face, model_faces: list[Face]) -> bool:
-  """True if ``face`` *is* one of ``model_faces`` (topological identity)."""
-  return any(face.wrapped.IsSame(mf.wrapped) for mf in model_faces)
+def _face_signature(face: Face) -> tuple[float, float, float, float]:
+  """A face's area centroid (x, y, z) and area -- a fingerprint that is both
+  orientation- and topology-independent, computed in a single surface-property
+  pass. Two faces with the same surface over the same region share it, so it
+  survives a face being *rebuilt* (new ``TShape``, same geometry) by sewing.
+  """
+  props = GProp_GProps()
+  BRepGProp.SurfaceProperties_s(face.wrapped, props)
+  c = props.CentreOfMass()
+  return (c.X(), c.Y(), c.Z(), props.Mass())
+
+
+class _FaceMatcher:
+  """Membership test: does a face coincide with one of a fixed set of faces?
+
+  We can't match by topological identity (``IsSame``) because the faces you hand
+  to ``paint_*`` are usually *not* the faces on the part: ``Solid(Shell([...]))``
+  sews its input faces, rebuilding them into fresh ``TShape``s, so a wall face
+  and its counterpart on the part are no longer the same OCCT object. Instead we
+  match on a geometric signature (:func:`_face_signature`), which sewing
+  preserves. Every face's signature is computed once up front -- recomputing per
+  comparison is far too slow for parts with hundreds of faces.
+  """
+
+  def __init__(self, faces: Sequence[Face], tol: float = 1e-6) -> None:
+    self._sig = np.array(
+      [_face_signature(f) for f in faces], dtype=float
+    ).reshape(-1, 4)
+    self._tol = tol
+
+  def contains(self, face: Face) -> bool:
+    if not len(self._sig):
+      return False
+    diff = np.abs(self._sig - _face_signature(face))
+    center_ok = (diff[:, :3] <= self._tol).all(axis=1)
+    # Area scales with the face, so its tolerance is relative (with a floor).
+    area_ok = diff[:, 3] <= self._tol * np.maximum(self._sig[:, 3], 1.0)
+    return bool((center_ok & area_ok).any())
 
 
 def _paint_whole_faces(
@@ -309,16 +346,18 @@ def _paint_whole_faces(
   state: EnforcerBlockerType | int,
   out: dict[int, str],
 ) -> None:
-  """Paint every triangle of each model face that *is* one of ``region_faces``.
+  """Paint every triangle of each model face that coincides with a region face.
 
-  Matched by identity (``IsSame``), so the region faces must be selected off the
-  part. Curvature-agnostic and exact: a face's triangle range comes straight
-  from the tessellation (``mesh.face_ranges``) -- no plane, UV mask, or
-  subdivision -- emitting one whole leaf (``state``) per triangle.
+  Matched by geometry (:class:`_FaceMatcher`), so the region faces only need to
+  *be* part faces, not the part's actual ``TShape``s -- they survive sewing.
+  Curvature-agnostic and exact: a face's triangle range comes straight from the
+  tessellation (``mesh.face_ranges``) -- no plane, UV mask, or subdivision --
+  emitting one whole leaf (``state``) per triangle.
   """
   leaf = encode_tree(state)
+  region = _FaceMatcher(region_faces)
   for mface, (start, end) in zip(model_faces, mesh.face_ranges):
-    if _on_part(mface, region_faces):
+    if region.contains(mface):
       for i in range(start, end):
         out[i] = leaf
 
@@ -341,11 +380,12 @@ def encode_region_paint(
   matches ``mesh.face_ranges``. ``region`` is a solid, planar face/sketch, or
   edge/wire (see this section's header); ``within`` is the edge proximity radius.
 
-  Face regions auto-detect their mode per face. A region face that *is* one of
-  the part's faces (matched by identity) is painted *whole* -- its entire
-  triangle range, exact at any curvature, so curved faces just work. A face that
-  isn't a part face (e.g. a ``BuildSketch`` mask) is treated as a planar 2D
-  *stencil* projected onto coplanar model faces, and so must be planar.
+  Face regions auto-detect their mode per face. A region face that coincides
+  with one of the part's faces (matched by geometry, so it survives the part
+  being rebuilt -- e.g. sewn by ``Solid(Shell([...]))``) is painted *whole* --
+  its entire triangle range, exact at any curvature, so curved faces just work.
+  A face that isn't a part face (e.g. a ``BuildSketch`` mask) is treated as a
+  planar 2D *stencil* projected onto coplanar model faces, and so must be planar.
   """
   items = _iter_items(region)
   out: dict[int, str] = {}
@@ -370,11 +410,12 @@ def encode_region_paint(
 
   faces = [f for item in items for f in item.faces()]
   if faces:
-    # A region face that *is* one of the part's faces is painted whole (works at
-    # any curvature); anything else (e.g. a BuildSketch mask) drives the planar
-    # 2D-stencil projection below and so must be planar.
-    whole = [f for f in faces if _on_part(f, model_faces)]
-    stencil = [f for f in faces if not _on_part(f, model_faces)]
+    # A region face that coincides with one of the part's faces is painted whole
+    # (works at any curvature); anything else (e.g. a BuildSketch mask) drives the
+    # planar 2D-stencil projection below and so must be planar.
+    part = _FaceMatcher(model_faces)
+    whole = [f for f in faces if part.contains(f)]
+    stencil = [f for f in faces if not part.contains(f)]
     if whole:
       _paint_whole_faces(mesh, model_faces, whole, state, out)
     if not stencil:
